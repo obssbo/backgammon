@@ -4,7 +4,7 @@ MCTS agent for Backgammon
 import numpy as np
 import torch
 import torch.nn as nn
-import Backgammon
+import backgammon as Backgammon
 import math
 from collections import defaultdict
 
