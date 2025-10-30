@@ -190,6 +190,66 @@ except Exception:
 _agent = MCTSAgent(_model, simulations=MCTS_SIMULATIONS)
 
 
+# -------- Checkpoint Management --------
+def save(path=None):
+    """Save model checkpoint compatible with train.py"""
+    from pathlib import Path
+    if path is None:
+        path = "checkpoints/mcts_best.pt"
+
+    save_path = Path(path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    torch.save({
+        "model": _model.state_dict(),
+        "simulations": MCTS_SIMULATIONS,
+    }, save_path)
+    print(f"[agent_mcts] Saved checkpoint to {save_path}")
+
+
+def load(path=None, map_location=None):
+    """Load model checkpoint"""
+    from pathlib import Path
+    if path is None:
+        path = "checkpoints/mcts_best.pt"
+
+    load_path = Path(path)
+    if not load_path.exists():
+        print(f"[agent_mcts] Checkpoint {load_path} not found, skipping load")
+        return
+
+    ml = map_location or "cpu"
+    state = torch.load(load_path, map_location=ml)
+    _model.load_state_dict(state["model"])
+    print(f"[agent_mcts] Loaded checkpoint from {load_path}")
+    set_eval_mode(True)
+
+
+def set_eval_mode(is_eval):
+    """Set model to eval or train mode"""
+    if is_eval:
+        _model.eval()
+    else:
+        _model.train()
+
+
+# -------- Episode Hooks (for train.py compatibility) --------
+def episode_start():
+    """Called at the start of each episode (no-op for MCTS)"""
+    pass
+
+
+def end_episode(outcome, final_board, perspective):
+    """Called at the end of each episode (no-op for MCTS)"""
+    pass
+
+
+def game_over_update(board, reward):
+    """Legacy compatibility hook (no-op for MCTS)"""
+    pass
+
+
+# -------- Main Action Function --------
 def action(board_copy, dice, player, i=0, **_):
     # Flip to player +1 perspective
     board_pov = _flip_board(board_copy) if player == -1 else board_copy
