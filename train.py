@@ -8,7 +8,7 @@ import backgammon
 import pubeval_player as pubeval         # baseline
 import random_player as randomAgent       # baseline
 import flipped_agent as flipped_util
-import agent_td_lambda as agent                            # student agent (this repo's agent.py)
+import agent_mcts as agent                            # student agent (this repo's agent.py)
 
 from pathlib import Path
 CKPT_DIR = Path("checkpoints")
