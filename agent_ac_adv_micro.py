@@ -277,9 +277,11 @@ def softmax_policy_micro(board, remaining_dice, oplayer, nSecondRoll):
     value_scalar = V_t.data[0, 0]
     
     # 8. Policy gradient: ∇ log π(a_t | s_t)
-    pi_expanded = pi.view(-1, 1)  # (156, 1)
-    expected_feature = torch.sum(pi_expanded * h_tanh, dim=0, keepdim=True).T  # (nh, 1)
-    grad_ln_pi = (h_tanh - expected_feature).detach()  # (nh, 1)
+    # For masked softmax: ∇Θ log π(at|st) = (e_at - π) ⊗ h_tanh
+    # This gives a (156, nh) matrix
+    e_at = torch.zeros(156, device=device, dtype=torch.float)
+    e_at[action_idx] = 1.0
+    grad_ln_pi = ((e_at - pi).view(-1, 1) * h_tanh.T).detach()  # (156, nh)
     
     # Return ONE action (not executed!)
     return src, die, x, value_scalar, grad_ln_pi, flipped_flag
