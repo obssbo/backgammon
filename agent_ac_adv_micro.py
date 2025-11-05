@@ -109,10 +109,73 @@ def load(path: str | None = None, map_location: str | torch.device = "cpu"):
     b1.data.copy_(state["b1"].data);  b2.data.copy_(state["b2"].data)
     theta.data.copy_(state["theta"].data)
     set_eval_mode(True)
+    
+def _lazy_load():
+    global _loaded_once
+    if _loaded_once:
+        return
+    if CKPT_DEFAULT.exists():
+        try:
+            load(str(CKPT_DEFAULT), map_location=device)
+        except Exception as e:
+            print(f"[agent-submit] Warning: failed to load '{CKPT_DEFAULT}': {e}")
+    else:
+        print(f"[agent-submit] Warning: checkpoint not found: {CKPT_DEFAULT}")
+    _loaded_once = True
 
 def set_eval_mode(is_eval: bool):
     global _eval_mode
     _eval_mode = bool(is_eval)
+    
+def _expand_dice_micro(dice: np.darray) -> list[int]:
+    d1, d2 = int(dice[0]), int(dice[1])
+    return [d1, d1] if d1 == d2 else [d1, d2]
+
+@torch.no_grad()
+def greedy_action_micro(board, dice, oplayer):
+    
+    flipped_flag = (oplayer == -1)
+    if flipped_flag:
+        board_eff = flipped_agent.flip_board(np.copy(board))
+        player_eff = +1
+    else:
+        board_eff = board
+        player_eff = oplayer
+    
+    dice_steps = _expand_dice_micro(dice)
+    chosen_moves_eff = []
+    
+    # Greedy per-die loop (at most two micro-moves with this backend)
+    for step_idx, die in enumerate(dice_steps):
+        # Enumerate single-die legal moves
+        legals = Backgammon.legal_move(board_eff, die, player_eff)  # list of [start,end]
+        if len(legals) == 0:
+            # cannot move on this die ⇒ pass this micro-step
+            continue
+
+        # nSecondRoll flag: True only on first micro-step of a double
+        nSecondRoll = bool((dice_steps[0] == dice_steps[-1]) and (len(dice_steps) == 2) and (step_idx == 0))
+
+        # Evaluate each single-die candidate by after-state value
+        xa_list = []
+        boards_after = []
+        for mv in legals:
+            bb = Backgammon.update_board(board_eff, np.asarray(mv, dtype=np.int32), player_eff)
+            boards_after.append(bb)
+            xa_list.append(one_hot_encoding(bb, nSecondRoll))
+
+        x = torch.from_numpy(np.stack(xa_list, axis=1)).to(device)  # (nx, na)
+        va = critic_forward(x).squeeze(0)                           # (na,)
+        m  = int(torch.argmax(va).item())
+
+        # Commit best micro-move in effective POV, update effective board
+        best_move = legals[m]
+        chosen_moves_eff.append(np.array(best_move, dtype=np.int32))
+        board_eff = boards_after[m]  # advance after-state
+
+        # Nothing chosen this turn
+    if len(chosen_moves_eff) == 0:
+        return []
 
 # -------------------- Policy helpers (faithful) --------------------
 def greedy_action(board, dice, oplayer, nSecondRoll):
@@ -246,7 +309,7 @@ def end_episode(outcome, final_board, perspective):
 def game_over_update(board, reward):
     # compatibility hook (not used in this faithful port)
     pass
-
+    
 # -------------------- Main action (called by train.py) --------------------
 def action(board_copy, dice, player, i, train=False, train_config=None):
     global Z_w1, Z_b1, Z_w2, Z_b2, Zf_w1, Zf_b1, Zf_w2, Zf_b2
