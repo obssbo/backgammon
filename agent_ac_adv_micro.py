@@ -36,9 +36,10 @@ gamma  = 1.0    # episodic undiscounted
 # -------------------- Features --------------------
 nx = 11 * 24 + 4 + 1  # matches your working script
 nh = int(nx / 2)
+dice_dim = 6
 
 def one_hot_encoding(board, nSecondRoll):
-    oneHot = np.zeros(nx, dtype=np.float32)
+    oneHot = np.zeros(nx + dice_dim, dtype=np.float32)
     # mark where zeros are
     zero_idx = np.where(board[1:25] == 0)[0]
     if zero_idx.size > 0:
@@ -91,6 +92,7 @@ advantage_flipped = 0.0
 I = 1.0
 If = 1.0
 moveNumber = 0
+dice_dim = 6
 
 _eval_mode = False
 
@@ -161,11 +163,13 @@ def greedy_action_micro(board, dice, oplayer):
         boards_after = []
         for mv in legals:
             bb = Backgammon.update_board(board_eff, np.asarray(mv, dtype=np.int32), player_eff)
-            boards_after.append(bb)
             xa_list.append(one_hot_encoding(bb, nSecondRoll))
 
         x = torch.from_numpy(np.stack(xa_list, axis=1)).to(device)  # (nx, na)
-        va = critic_forward(x).squeeze(0)                           # (na,)
+        h = torch.mm(w1, x) + b1
+        h_tanh = h.tanh()
+        y = torch.mm(w2, h_tanh) + b2
+        va = y.sigmoid().detach().cpu().numpy()                         # (na,)
         m  = int(torch.argmax(va).item())
 
         # Commit best micro-move in effective POV, update effective board
@@ -309,6 +313,125 @@ def end_episode(outcome, final_board, perspective):
 def game_over_update(board, reward):
     # compatibility hook (not used in this faithful port)
     pass
+
+
+def action_micro(board_copy, dice, player, i, train=False, train_config=None):
+    global Z_w1, Z_b1, Z_w2, Z_b2, Zf_w1, Zf_b1, Zf_w2, Zf_b2
+    global Z_theta, Zf_theta
+    global xold, xold_flipped, gradlnpi, gradlnpi_flipped
+    global advantage, advantage_flipped, I, If, moveNumber
+
+    nSecondRoll_flag = bool((dice[0] == dice[1]) and (i == 0))
+    flippedplayer = -1
+
+    # Greedy during eval
+    if (not train) or _eval_mode:
+        return greedy_action_micro(np.copy(board_copy), dice, player, nSecondRoll_flag)
+
+    # Sample action + get targets/grad
+    out = softmax_policy(np.copy(board_copy), dice, player, nRoll=i)
+    act, x, target_val, grad_ln_pi, A, chosen_after_eff, flipped_flag = out
+    if isinstance(act, list) and len(act) == 0:
+        # no legal moves
+        if not nSecondRoll_flag:
+            moveNumber += 1
+        return []
+
+    # Terminal check using chosen after-state in +1 POV
+    is_terminal = (chosen_after_eff[27] == 15)
+
+    # Rewards exactly as in original
+    if is_terminal:
+        reward  = 1.0 if (player != flippedplayer) else 0.0
+        rewardf = 1.0 - reward
+        tgt = torch.tensor(0.0, device=device, dtype=torch.float)
+    else:
+        reward  = 0.0
+        rewardf = 0.0
+        tgt = target_val  # scalar tensor
+
+    # Start updates after at least one full turn and a move happened
+    if (moveNumber > 1) and (len(act) > 0):
+        # ----- flipped branch OR terminal -----
+        if (flippedplayer == player) or is_terminal:
+            if xold_flipped is not None:
+                # critic forward/backward on previous flipped after-state
+                h = torch.mm(w1, xold_flipped) + b1
+                h_tanh = h.tanh()
+                y = torch.mm(w2, h_tanh) + b2
+                y_sigmoid = y.sigmoid()
+                y_sigmoid.backward()
+
+                # update critic traces
+                Zf_w1 = gamma * lam * Zf_w1 + w1.grad.data
+                Zf_b1 = gamma * lam * Zf_b1 + b1.grad.data
+                Zf_w2 = gamma * lam * Zf_w2 + w2.grad.data
+                Zf_b2 = gamma * lam * Zf_b2 + b2.grad.data
+                # zero grads
+                w1.grad.data.zero_(); b1.grad.data.zero_()
+                w2.grad.data.zero_(); b2.grad.data.zero_()
+
+                # actor traces with stored grad ln pi from previous flipped step
+                if gradlnpi_flipped is not None:
+                    Zf_theta = gamma * lam * Zf_theta + If * gradlnpi_flipped
+
+                # TD error (scalar tensor broadcast over params)
+                delta = torch.tensor(rewardf, device=device) + gamma * tgt - y_sigmoid.detach()
+                # critic updates
+                w1.data = w1.data + alpha1 * delta * Zf_w1
+                b1.data = b1.data + alpha1 * delta * Zf_b1
+                w2.data = w2.data + alpha2 * delta * Zf_w2
+                b2.data = b2.data + alpha2 * delta * Zf_b2
+                # actor update (faithful: uses advantage from previous flipped step)
+                theta.data = theta.data + alpha * advantage_flipped * Zf_theta
+
+                If = If * gamma
+
+        # ----- non-flipped branch OR terminal -----
+        if (flippedplayer != player) or is_terminal:
+            if xold is not None:
+                h = torch.mm(w1, xold) + b1
+                h_tanh = h.tanh()
+                y = torch.mm(w2, h_tanh) + b2
+                y_sigmoid = y.sigmoid()
+                y_sigmoid.backward()
+
+                Z_w1 = gamma * lam * Z_w1 + w1.grad.data
+                Z_b1 = gamma * lam * Z_b1 + b1.grad.data
+                Z_w2 = gamma * lam * Z_w2 + w2.grad.data
+                Z_b2 = gamma * lam * Z_b2 + b2.grad.data
+                w1.grad.data.zero_(); b1.grad.data.zero_()
+                w2.grad.data.zero_(); b2.grad.data.zero_()
+
+                if gradlnpi is not None:
+                    Z_theta = gamma * lam * Z_theta + I * gradlnpi
+
+                delta = torch.tensor(reward, device=device) + gamma * tgt - y_sigmoid.detach()
+                w1.data = w1.data + alpha1 * delta * Z_w1
+                b1.data = b1.data + alpha1 * delta * Z_b1
+                w2.data = w2.data + alpha2 * delta * Z_w2
+                b2.data = b2.data + alpha2 * delta * Z_b2
+
+                theta.data = theta.data + alpha * advantage * Z_theta
+
+                I = gamma * I
+
+    # cache current side’s features & actor grad ln pi
+    if x is not None and len(act) > 0:
+        if player == -1:
+            xold_flipped = x
+            gradlnpi_flipped = grad_ln_pi
+            advantage_flipped = A
+        else:
+            xold = x
+            gradlnpi = grad_ln_pi
+            advantage = A
+
+    if not nSecondRoll_flag:
+        moveNumber += 1
+
+    return act
+
     
 # -------------------- Main action (called by train.py) --------------------
 def action(board_copy, dice, player, i, train=False, train_config=None):
