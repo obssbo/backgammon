@@ -147,13 +147,13 @@ def build_mask(board, remaining_dice, oplayer):
         legal_moves = Backgammon.legal_move(board, die, oplayer)
         for move in legal_moves:
             src = int(move[0])
-            idx = 6 * src + die
+            idx = 6 * src + (die - 1)
             mask[idx] = 1.0
     
     if mask.sum() == 0:
         for die in set(remaining_dice):
             src = 0
-            mask[6 * src + die] = 1.0
+            mask[6 * src + (die - 1)] = 1.0
     
     return mask
 
@@ -164,8 +164,8 @@ def encode_state_micro(board, remaining_dice, nSecondRoll):
     return np.concatenate([board_features,dice_features])
 
 def action_idx_2_src_die(idx):
-    die = ((idx - 1) % 6) + 1
-    src = (idx - die) // 6
+    die = (idx % 6) + 1
+    src = idx // 6
     return src,die
 
 @torch.no_grad()
