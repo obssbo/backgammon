@@ -20,7 +20,7 @@ from torch.autograd import Variable
 
 # ---- engine imports (lower-case backgammon preferred) ----
 import backgammon as Backgammon
-import flipped_agent as flipped_agent  # your existing flip helpers
+import flipped_agent as flipped_agent
 
 # -------------------- Device --------------------
 # Original used CPU by default for stability/faithfulness
@@ -35,7 +35,7 @@ gamma  = 1.0    # episodic undiscounted
 
 # -------------------- Features --------------------
 dice_dim = 6
-nx = 11 * 24 + 4 + 1 + dice_dim  # matches your working script
+nx = 11 * 24 + 4 + 1 + dice_dim
 nh = int(nx / 2)
 
 def one_hot_encoding(board, nSecondRoll):
@@ -687,3 +687,4 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
 #        moveNumber += 1
 
 #    return act
+
