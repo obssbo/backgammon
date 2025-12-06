@@ -185,7 +185,7 @@ def end_episode(outcome, final_board, perspective):
     next_value = float(outcome)
     
     # Backward pass through episode
-    for state_features, predicted_value, reward, next_v in reversed(_episode_trajectory):
+    for state_features, predicted_value, reward in reversed(_episode_trajectory):
         td_error = reward + CFG.gamma * next_value - predicted_value
         
         # Get gradients
@@ -277,7 +277,7 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
             next_s_after = s_after
             next_v = 0.0
             
-        _episode_trajectory.append((s_after, float(policy_scores[a_idx]), r, next_v))
+        _episode_trajectory.append((s_after, float(policy_scores[a_idx]), r))
 
     # Return move in ORIGINAL POV
     if player == -1:
