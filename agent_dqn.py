@@ -223,7 +223,7 @@ def _s_next_after_opponent(chosen_board_plus_one: np.ndarray) -> np.ndarray:
     feats_t = torch.as_tensor(feats, dtype=torch.float32, device=CFG.device)
     with torch.no_grad():
         vals = _tpnet(feats_t).squeeze(1)
-        idx = int(torch.argmax(vals).item())
+        idx = int(torch.argmin(vals).item())
     return feats[idx]
 
 # ------------- Policy -------------
@@ -250,14 +250,14 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
     Sp = np.stack([_encode_state(b, moves_left_after) for b in possible_boards], axis=0)
     Sp_t = torch.as_tensor(Sp, dtype=torch.float32, device=CFG.device)
 
+    with torch.no_grad():
+        policy_scores = _pnet(Sp_t).squeeze(1)
     # Epsilon-greedy action selection
     epsilon = CFG.epsilon
     if train and (random.random() < epsilon):
         a_idx = random.randint(0, nA - 1)
     else:
-        with torch.no_grad():
-            policy_scores = _pnet(Sp_t).squeeze(1)
-            a_idx = int(torch.argmax(policy_scores).item())
+        a_idx = int(torch.argmax(policy_scores).item())
 
     chosen_move = possible_moves[a_idx]
     chosen_board_plus_one = possible_boards[a_idx]
