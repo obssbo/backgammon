@@ -94,7 +94,10 @@ def train(n_games=200_000, n_epochs=5_000, n_eval=500, eval_vs="pubeval"):
     print(f"Baseline for eval: {baseline.__name__ if hasattr(baseline, '__name__') else baseline}")
 
     for g in range(1, n_games + 1):
-        winner, final_board = play_one_game(agent, agent, training=True, commentary=False)
+        if (g % 5) == 0:
+            winner, final_board = play_one_game(baseline, agent, training=True, commentary=False)
+        else:
+            winner, final_board = play_one_game(agent, agent, training=True, commentary=False)
 
         # legacy compatibility hook
         if hasattr(agent, "game_over_update"):
