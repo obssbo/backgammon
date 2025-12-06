@@ -85,7 +85,7 @@ def evaluate(agent_mod, evaluation_agent, n_eval, label=""):
     return winrate
 
 def train(n_games=200_000, n_epochs=5_000, n_eval=500, eval_vs="pubeval"):
-    baseline = randomAgent #pubeval if eval_vs == "pubeval" else randomAgent
+    baseline = pubeval if eval_vs == "pubeval" else randomAgent
 
     best_wr = -1.0
     winrates = []
