@@ -85,7 +85,7 @@ def evaluate(agent_mod, evaluation_agent, n_eval, label=""):
     return winrate
 
 def train(n_games=200_000, n_epochs=5_000, n_eval=500, eval_vs="pubeval"):
-    baseline = pubeval if eval_vs == "pubeval" else randomAgent
+    baseline = randomAgent #pubeval if eval_vs == "pubeval" else randomAgent
 
     best_wr = -1.0
     winrates = []
@@ -102,7 +102,7 @@ def train(n_games=200_000, n_epochs=5_000, n_eval=500, eval_vs="pubeval"):
             flipped_final = flipped_util.flip_board(final_board)
             agent.game_over_update(flipped_final, int(winner == -1))
 
-        if (g % n_epochs) == 0:
+        if (g % 100) == 0:
             if hasattr(agent, "set_eval_mode"): agent.set_eval_mode(True)
             wr = evaluate(agent, baseline, n_eval, label=f"after {g} games")
             winrates.append(wr)
