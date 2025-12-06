@@ -30,9 +30,9 @@ import backgammon  # engine
 class Config:
     state_dim = 24 + 4 + 1      # 24 points + (bar_self, bar_opp, off_self, off_opp) + moves_left
     gamma = 0.99
-    lr = 1e-4
-    epsilon = 0.1
-    lam = 0.7
+    lr = 1e-3
+    #epsilon = 0.1
+    lam = 0.9                     # TD(lambda) trace decay
     batch_size = 256
     buffer_size = 100_000
     start_learning_after = 2_000
