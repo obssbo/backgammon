@@ -106,6 +106,7 @@ class PolicyNet(nn.Module):
 _pnet = PolicyNet().to(CFG.device)
 _tpnet = PolicyNet().to(CFG.device)
 _tpnet.load_state_dict(_pnet.state_dict())
+_opt = torch.optim.Adam(_pnet.parameters(), lr=CFG.lr)
 
 
 _traces = {+1:{name: torch.zeros_like(param) for name, param in _pnet.named_parameters()}, 
@@ -185,23 +186,13 @@ def end_episode(outcome, final_board, perspective):
     if _eval_mode or len(_episode_trajectory[perspective]) == 0:
         return
     
-    if len(_episode_trajectory[perspective]) > 0:
-        avg_td_error = np.mean([abs(reward + CFG.gamma * next_v - predicted_value) 
-                                for _, predicted_value, reward, next_v in _episode_trajectory[perspective]])
-        
-        max_update = max(torch.abs(param_updates[name]).max().item() 
-                        for name in param_updates)
-        
-        if avg_td_error > 5.0 or max_update > 0.1:
-            print(f"WARNING: Large updates detected! avg_td_error={avg_td_error:.3f}, max_update={max_update:.3f}")
-    
     # Backward pass through episode
     for state_features, predicted_value, reward, next_v in reversed(_episode_trajectory[perspective]):
         td_error = reward + CFG.gamma * next_v - predicted_value
         
         # Get gradients
         state_t = torch.tensor(state_features, dtype=torch.float32, device=CFG.device).unsqueeze(0)
-        _pnet.zero_grad()
+        _opt.zero_grad()
         v = _pnet(state_t)
         v.backward(retain_graph=False)
         
@@ -209,9 +200,10 @@ def end_episode(outcome, final_board, perspective):
         with torch.no_grad():
             for name, param in _pnet.named_parameters():
                 if param.grad is not None:
-                    _traces[perspective][name] = CFG.gamma * CFG.lam * _traces[perspective][name] + param.grad
-                    param += CFG.lr * td_error * _traces[perspective][name]
+                    _traces[perspective][name] = CFG.gamma * CFG.lam * _traces[perspective][name] + param.grad.data
+                    param.grad.data = td_error * _traces[perspective][name]
                 param.grad = None
+        _opt.step()
 
 def game_over_update(board, reward):
     pass
