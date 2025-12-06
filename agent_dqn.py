@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Greedy-only PyTorch DQN agent for Backgammon (after-state evaluation).
+Greedy-only PyTorch Policy agent to estimate (after-state evaluation).
 
 API:
   - action(board, dice, player, i, train=False, train_config=None)
@@ -11,12 +11,9 @@ API:
   - load(path="checkpoints/best.pt")
 
 Key points:
-- SAME network architecture as your attached agent.py:
-    QNet: Linear(state_dim, 256) + ReLU -> Linear(256, 256) + ReLU -> Linear(256, 1)
-- Selection is ALWAYS greedy (no epsilon).
-- We evaluate legal after-states for the current roll (single call to update_board in env).
-- Replay stores (s = chosen after-state, r, s_next = next decision point after opponent's turn, done).
-- Targets: r (terminal) else r + γ * V_targ(s_next).
+- Policy network (_pnet) estimates Q(after-state) from +1 POV.
+- Computing the TD(\lambda) eligibility traces manually.
+- During training, opponent's turn is simulated to get next after-state.
 """
 
 from collections import deque
@@ -34,6 +31,7 @@ class Config:
     state_dim = 24 + 4 + 1      # 24 points + (bar_self, bar_opp, off_self, off_opp) + moves_left
     gamma = 0.99
     lr = 1e-3
+    lam = 0.7
     batch_size = 256
     buffer_size = 100_000
     start_learning_after = 2_000
@@ -93,23 +91,24 @@ class ReplayBuffer:
             torch.from_numpy(D).to(device=CFG.device).unsqueeze(1),  # <— avoids the error
         )
 
-# ------------- Model (IDENTICAL architecture to your agent.py) -------------
-class QNet(nn.Module):
+class PolicyNet(nn.Module):
     def __init__(self, in_dim=CFG.state_dim, hid=CFG.hidden):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, hid), nn.ReLU(),
-            nn.Linear(hid, hid),    nn.ReLU(),
+            nn.Linear(hid, hid), nn.ReLU(),
             nn.Linear(hid, 1),
         )
     def forward(self, x):
         return self.net(x)
 
-_qnet = QNet().to(CFG.device)
-_tnet = QNet().to(CFG.device)
-_tnet.load_state_dict(_qnet.state_dict())
-_opt = torch.optim.Adam(_qnet.parameters(), lr=CFG.lr)
-_buf = ReplayBuffer(CFG.buffer_size)
+_pnet = PolicyNet().to(CFG.device)
+_tpnet = PolicyNet().to(CFG.device)
+_tpnet.load_state_dict(_pnet.state_dict())
+
+
+_traces = {name: torch.zeros(param) for name, param in _pnet.named_parameters()}
+_episode_trajectory = []
 
 _steps = 0
 _eval_mode = False
@@ -120,13 +119,13 @@ _loaded_from_disk = False
 
 def save(path: str = str(CHECKPOINT_PATH)):
     p = Path(path); p.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"qnet": _qnet.state_dict()}, p)
+    torch.save({"pnet": _pnet.state_dict()}, p)
 
 def load(path: str = str(CHECKPOINT_PATH), map_location: str | torch.device = "cpu"):
     global _loaded_from_disk
     state = torch.load(path, map_location=map_location)
-    _qnet.load_state_dict(state["qnet"])
-    _tnet.load_state_dict(_qnet.state_dict())
+    _pnet.load_state_dict(state["pnet"])
+    _tpnet.load_state_dict(_pnet.state_dict())
     set_eval_mode(True)
     _loaded_from_disk = True
 
@@ -162,50 +161,51 @@ def _encode_state(board_plus_one, moves_left):
 def _is_terminal_plus_one(board_plus_one):
     return board_plus_one[27] == 15
 
-# ------------- Learning (after-state → after-state) -------------
-def _maybe_learn():
-    global _steps
-    if _eval_mode: return
-    if len(_buf) < CFG.start_learning_after: return
-    if _steps % CFG.train_every != 0: return
-
-    S, R, S2, D = _buf.sample(CFG.batch_size)
-    with torch.no_grad():
-        Q2 = _tnet(S2)
-        mask = (~D).float()
-        target = R + mask * (CFG.gamma * Q2)
-
-    Q = _qnet(S)
-    loss = F.mse_loss(Q, target)
-
-    _opt.zero_grad(set_to_none=True)
-    loss.backward()
-    nn.utils.clip_grad_norm_(_qnet.parameters(), 1.0)
-    _opt.step()
-
-    if _steps % CFG.target_update_every == 0:
-        _tnet.load_state_dict(_qnet.state_dict())
-
 # ------------- Hooks -------------
 def set_eval_mode(is_eval: bool):
     global _eval_mode
     _eval_mode = bool(is_eval)
-    if _eval_mode: _qnet.eval()
-    else:          _qnet.train()
+    if _eval_mode: _pnet.eval()
+    else:          _pnet.train()
 
 def episode_start():
-    pass
+    global _episode_trajectory
+    _episode_trajectory = []
+    # Reset eligibility traces
+    for traces in _traces.values():
+        traces.zero_()
 
 def end_episode(outcome, final_board, perspective):
-    pass
+    """TD(lambda) update at end of episode
+    """
+    if _eval_mode or len(_episode_trajectory) == 0:
+        return
+    
+    # outcome: +1 win, -1 loss from 'perspective'
+    next_value = float(outcome)
+    
+    # Backward pass through episode
+    for state_features, predicted_value, reward, next_v in reversed(_episode_trajectory):
+        td_error = reward + CFG.gamma * next_value - predicted_value
+        
+        # Get gradients
+        state_t = torch.tensor(state_features, dtype=torch.float32, device=CFG.device).unsqueeze(0)
+        _pnet.zero_grad()
+        v = _pnet(state_t)
+        v.backward(retain_graph=False)
+        
+        # Update traces and parameters
+        with torch.no_grad():
+            for name, param in _pnet.named_parameters():
+                if param.grad is not None:
+                    _traces[name] = CFG.gamma * CFG.lam * _traces[name] + param.grad
+                    param += CFG.lr * td_error * _traces[name]
+                param.grad = None
+        
+        next_value = predicted_value
 
 def game_over_update(board, reward):
-    """
-    Trainer may call this at episode end (twice: normal & flipped).
-    Encode as +1 POV with moves_left=0 and push a terminal sample.
-    """
-    s = _encode_state(board, moves_left=0)
-    _buf.push(s, float(reward), s, True)
+    pass
 
 # ------------- Opponent turn → next after-state features -------------
 def _s_next_after_opponent(chosen_board_plus_one: np.ndarray) -> np.ndarray:
@@ -223,7 +223,7 @@ def _s_next_after_opponent(chosen_board_plus_one: np.ndarray) -> np.ndarray:
     feats = np.stack([_encode_state(_flip_board(b), moves_left=1) for b in opp_boards], axis=0)
     feats_t = torch.as_tensor(feats, dtype=torch.float32, device=CFG.device)
     with torch.no_grad():
-        vals = _tnet(feats_t).squeeze(1)
+        vals = _tpnet(feats_t).squeeze(1)
         idx = int(torch.argmax(vals).item())
     return feats[idx]
 
@@ -253,8 +253,8 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
 
     # Greedy selection (no exploration)
     with torch.no_grad():
-        q_after = _qnet(Sp_t).squeeze(1)  # [nA]
-        a_idx = int(torch.argmax(q_after).item())
+        policy_scores = _pnet(Sp_t).squeeze(1)
+        a_idx = int(torch.argmax(policy_scores).item())
 
     chosen_move = possible_moves[a_idx]
     chosen_board_plus_one = possible_boards[a_idx]
@@ -265,13 +265,19 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
     r = 1.0 if done else 0.0
 
     if train and (not _eval_mode):
+        r = 1.0 if done else 0.0
+        
+        # Boostrap next after-state value via opponent simulation
         if not done:
-            s_next = _s_next_after_opponent(chosen_board_plus_one)
+            next_s_after = _s_next_after_opponent(chosen_board_plus_one)
+            next_v = float(_tpnet(
+                torch.tensor(next_s_after, dtype=torch.float32, device=CFG.device).unsqueeze(0)
+            ))
         else:
-            s_next = s_after  # masked by 'done'
-        _buf.push(s_after, float(r), s_next, bool(done))
-        _steps += 1
-        _maybe_learn()
+            next_s_after = s_after
+            next_v = 0.0
+            
+        _episode_trajectory.append((s_after, float(policy_scores[a_idx]), r, next_v))
 
     # Return move in ORIGINAL POV
     if player == -1:
