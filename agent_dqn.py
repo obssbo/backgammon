@@ -107,7 +107,7 @@ _tpnet = PolicyNet().to(CFG.device)
 _tpnet.load_state_dict(_pnet.state_dict())
 
 
-_traces = {name: torch.zeros(param) for name, param in _pnet.named_parameters()}
+_traces = {name: torch.zeros_like(param) for name, param in _pnet.named_parameters()}
 _episode_trajectory = []
 
 _steps = 0
