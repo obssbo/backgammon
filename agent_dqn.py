@@ -202,7 +202,6 @@ def end_episode(outcome, final_board, perspective):
                 if param.grad is not None:
                     _traces[perspective][name] = CFG.gamma * CFG.lam * _traces[perspective][name] + param.grad.data
                     param.grad.data = td_error * _traces[perspective][name]
-                param.grad = None
         _opt.step()
 
 def game_over_update(board, reward):
