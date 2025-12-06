@@ -185,6 +185,16 @@ def end_episode(outcome, final_board, perspective):
     if _eval_mode or len(_episode_trajectory[perspective]) == 0:
         return
     
+    if len(_episode_trajectory[perspective]) > 0:
+        avg_td_error = np.mean([abs(reward + CFG.gamma * next_v - predicted_value) 
+                                for _, predicted_value, reward, next_v in _episode_trajectory[perspective]])
+        
+        max_update = max(torch.abs(param_updates[name]).max().item() 
+                        for name in param_updates)
+        
+        if avg_td_error > 5.0 or max_update > 0.1:
+            print(f"WARNING: Large updates detected! avg_td_error={avg_td_error:.3f}, max_update={max_update:.3f}")
+    
     # Backward pass through episode
     for state_features, predicted_value, reward, next_v in reversed(_episode_trajectory[perspective]):
         td_error = reward + CFG.gamma * next_v - predicted_value
