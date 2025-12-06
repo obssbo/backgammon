@@ -12,7 +12,7 @@ API:
 
 Key points:
 - Policy network (_pnet) estimates Q(after-state) from +1 POV.
-- Computing the TD(\lambda) eligibility traces manually.
+- Computing the TD(lambda) eligibility traces manually.
 - During training, opponent's turn is simulated to get next after-state.
 """
 
@@ -107,8 +107,9 @@ _tpnet = PolicyNet().to(CFG.device)
 _tpnet.load_state_dict(_pnet.state_dict())
 
 
-_traces = {name: torch.zeros_like(param) for name, param in _pnet.named_parameters()}
-_episode_trajectory = []
+_traces = {+1:{name: torch.zeros_like(param) for name, param in _pnet.named_parameters()}, 
+           -1:{name: torch.zeros_like(param) for name, param in _pnet.named_parameters()}}
+_episode_trajectory = {+1: [], -1: []}
 
 _steps = 0
 _eval_mode = False
@@ -170,23 +171,22 @@ def set_eval_mode(is_eval: bool):
 
 def episode_start():
     global _episode_trajectory
-    _episode_trajectory = []
+    _episode_trajectory = {+1: [], -1: []}
     # Reset eligibility traces
-    for traces in _traces.values():
-        traces.zero_()
+    for perspective in [+1,-1]:
+        for traces in _traces[perspective].values():
+            traces.zero_()
 
 def end_episode(outcome, final_board, perspective):
-    """TD(lambda) update at end of episode
     """
-    if _eval_mode or len(_episode_trajectory) == 0:
+    TD(lambda) update at end of episode
+    """
+    if _eval_mode or len(_episode_trajectory[perspective]) == 0:
         return
     
-    # outcome: +1 win, -1 loss from 'perspective'
-    next_value = float(outcome)
-    
     # Backward pass through episode
-    for state_features, predicted_value, reward in reversed(_episode_trajectory):
-        td_error = reward + CFG.gamma * next_value - predicted_value
+    for state_features, predicted_value, reward, next_v in reversed(_episode_trajectory[perspective]):
+        td_error = reward + CFG.gamma * next_v - predicted_value
         
         # Get gradients
         state_t = torch.tensor(state_features, dtype=torch.float32, device=CFG.device).unsqueeze(0)
@@ -198,11 +198,9 @@ def end_episode(outcome, final_board, perspective):
         with torch.no_grad():
             for name, param in _pnet.named_parameters():
                 if param.grad is not None:
-                    _traces[name] = CFG.gamma * CFG.lam * _traces[name] + param.grad
-                    param += CFG.lr * td_error * _traces[name]
+                    _traces[perspective][name] = CFG.gamma * CFG.lam * _traces[perspective][name] + param.grad
+                    param += CFG.lr * td_error * _traces[perspective][name]
                 param.grad = None
-        
-        next_value = predicted_value
 
 def game_over_update(board, reward):
     pass
@@ -265,7 +263,10 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
     r = 1.0 if done else 0.0
 
     if train and (not _eval_mode):
-        r = 1.0 if done else 0.0
+        
+        _steps += 1
+        if _steps % CFG.target_update_every == 0:
+            _tpnet.load_state_dict(_pnet.state_dict())
         
         # Boostrap next after-state value via opponent simulation
         if not done:
@@ -277,7 +278,7 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
             next_s_after = s_after
             next_v = 0.0
             
-        _episode_trajectory.append((s_after, float(policy_scores[a_idx]), r))
+        _episode_trajectory[player].append((s_after, float(policy_scores[a_idx]), r, next_v))
 
     # Return move in ORIGINAL POV
     if player == -1:
