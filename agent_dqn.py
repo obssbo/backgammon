@@ -30,7 +30,8 @@ import backgammon  # engine
 class Config:
     state_dim = 24 + 4 + 1      # 24 points + (bar_self, bar_opp, off_self, off_opp) + moves_left
     gamma = 0.99
-    lr = 1e-3
+    lr = 1e-4
+    epsilon = 0.1
     lam = 0.7
     batch_size = 256
     buffer_size = 100_000
@@ -225,7 +226,7 @@ def _s_next_after_opponent(chosen_board_plus_one: np.ndarray) -> np.ndarray:
         idx = int(torch.argmax(vals).item())
     return feats[idx]
 
-# ------------- Policy (ALWAYS greedy) -------------
+# ------------- Policy -------------
 def action(board_copy, dice, player, i, train=False, train_config=None):
     """
     Returns [] if no legal moves, else an array of shape (k,2) of [start,end] moves.
@@ -249,10 +250,14 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
     Sp = np.stack([_encode_state(b, moves_left_after) for b in possible_boards], axis=0)
     Sp_t = torch.as_tensor(Sp, dtype=torch.float32, device=CFG.device)
 
-    # Greedy selection (no exploration)
-    with torch.no_grad():
-        policy_scores = _pnet(Sp_t).squeeze(1)
-        a_idx = int(torch.argmax(policy_scores).item())
+    # Epsilon-greedy action selection
+    epsilon = CFG.epsilon
+    if train and (random.random() < epsilon):
+        a_idx = random.randint(0, nA - 1)
+    else:
+        with torch.no_grad():
+            policy_scores = _pnet(Sp_t).squeeze(1)
+            a_idx = int(torch.argmax(policy_scores).item())
 
     chosen_move = possible_moves[a_idx]
     chosen_board_plus_one = possible_boards[a_idx]
