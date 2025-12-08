@@ -35,7 +35,7 @@ def _apply_move_sequence(board, move_seq, player):
     mv = np.asarray(move_seq, dtype=np.int32)
     return backgammon.update_board(board, mv, player)
 
-def play_one_game(agent1, agent2, training=False, commentary=False):
+def play_one_game(agent1, agent2, training=False, commentary=False, is_self_play=True):
     board = backgammon.init_board()
     player = np.random.randint(2) * 2 - 1  # +1 or -1
 
@@ -65,7 +65,7 @@ def play_one_game(agent1, agent2, training=False, commentary=False):
     winner = -player
     final_board = board
 
-    if hasattr(agent1, "end_episode"): agent1.end_episode(+1 if winner == 1 else -1, final_board, perspective=+1)
+    if hasattr(agent1, "end_episode"): agent1.end_episode(+1 if winner == 1 else -1, final_board, perspective=+1, is_self_play=is_self_play)
     if hasattr(agent2, "end_episode"): agent2.end_episode(+1 if winner == -1 else -1, final_board, perspective=-1)
 
     return winner, final_board
