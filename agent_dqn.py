@@ -30,13 +30,13 @@ import backgammon  # engine
 class Config:
     state_dim = 24 + 4 + 1      # 24 points + (bar_self, bar_opp, off_self, off_opp) + moves_left
     gamma = 0.99
-    lr = 1e-3
+    lr = 1e-4
     epsilon = 0.0
     lam = 0.7                     # TD(lambda) trace decay
     batch_size = 256
     buffer_size = 100_000
     start_learning_after = 5_00
-    target_update_every = 1_000
+    target_update_every = 2_000
     train_every = 1
     hidden1 = 256                # <- same width as your agent.py
     hidden2 = 512
@@ -70,12 +70,12 @@ class PolicyNet(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, hid1), nn.ReLU(),
-            nn.Linear(hid1, hid1), nn.ReLU(),
             nn.Linear(hid1, hid2), nn.ReLU(),
             nn.Linear(hid2, 1),
         )
     def forward(self, x):
-        return self.net(x)
+        scores = self.net(x).squeeze(-1)
+        return scores
 
 _pnet = PolicyNet().to(CFG.device)
 _tpnet = PolicyNet().to(CFG.device)
@@ -138,7 +138,7 @@ def _is_terminal_plus_one(board_plus_one):
     return board_plus_one[27] == 15
 
 # ------------- Hooks -------------
-def set_eval_mode(is_eval: bool):
+def set_eval_mode(is_eval=False):
     global _eval_mode
     _eval_mode = bool(is_eval)
     if _eval_mode: _pnet.eval()
@@ -151,35 +151,32 @@ def episode_start():
         _traces[name].zero_()
 
 def end_episode(outcome, final_board, perspective):
-    """
-    TD(lambda) update at end of episode
-    """
     if _eval_mode or len(_episode_trajectory) == 0:
         return
 
-    final_reward = 1.0 if outcome == 1 else 0.0
+    final_reward = 1.0 if outcome == perspective else 0.0
 
-    if len(_episode_trajectory) > 0:
-        last_state, last_value, _, _ = _episode_trajectory[-1]
-        _episode_trajectory[-1] = (last_state, last_value, final_reward, 0.0)
-    
-    # Backward pass through episode
-    for state_features, predicted_value, reward, next_v in _episode_trajectory:
-        # TD error
-        td_error = reward + CFG.gamma * next_v - predicted_value
+    # Set the final reward for the last after-state
+    last_state, last_value, _, _ = _episode_trajectory[-1]
+    _episode_trajectory[-1] = (last_state, last_value, final_reward, 0.0)
 
-        # Compute gradients
+    # Forward TD(lambda) update
+    for t, (state_features, _, reward, next_v) in enumerate(_episode_trajectory):
         state_t = torch.tensor(state_features, dtype=torch.float32, device=CFG.device).unsqueeze(0)
         _opt.zero_grad()
-        v = _pnet(state_t)
-        v.backward()
+        v = _pnet(state_t).squeeze(0)
 
-        # Update traces & parameters
+        # TD error
+        td_error = reward + CFG.gamma * next_v - v
+
+        # Policy gradient-like update
+        v.backward()  # compute grad of predicted value w.r.t params
         with torch.no_grad():
             for name, param in _pnet.named_parameters():
                 if param.grad is not None:
                     _traces[name] = CFG.gamma * CFG.lam * _traces[name] + param.grad
-                    param.add(_traces[name], alpha=-CFG.lr * td_error)
+                    param.add_(_traces[name], alpha=CFG.lr * td_error.item())
+
 
 def game_over_update(board, reward):
     pass
@@ -200,7 +197,7 @@ def _s_next_after_opponent(chosen_board_plus_one: np.ndarray) -> np.ndarray:
     feats = np.stack([_encode_state(_flip_board(b), moves_left=1) for b in opp_boards], axis=0)
     feats_t = torch.as_tensor(feats, dtype=torch.float32, device=CFG.device)
     with torch.no_grad():
-        vals = _tpnet(feats_t).squeeze(1)
+        vals = _tpnet(feats_t)
         idx = int(torch.argmax(vals).item())
     return feats[idx]
 
@@ -229,11 +226,12 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
     Sp_t = torch.as_tensor(Sp, dtype=torch.float32, device=CFG.device)
 
     with torch.no_grad():
-        policy_scores = _pnet(Sp_t).squeeze(1)
+        policy_scores = _pnet(Sp_t)
     # Epsilon-greedy action selection
     epsilon = CFG.epsilon
-    if train and (random.random() < epsilon):
-        a_idx = random.randint(0, nA - 1)
+    if train:
+        probs = torch.softmax(policy_scores, dim=0)
+        a_idx = int(torch.multinomial(probs, 1).item())
     else:
         a_idx = int(torch.argmax(policy_scores).item())
 
@@ -261,7 +259,10 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
         else:
             next_s_after = s_after
             next_v = 0.0
-                
+        #if train and _steps % 100 == 0:
+        #    print(f"[DEBUG] Step {_steps}: value range [{policy_scores.min().item():.3f}, {policy_scores.max().item():.3f}], std={policy_scores.std().item():.3f}")  
+        #if _steps % 100 == 0:
+        #    print(r)
         # Append to flat trajectory
         _episode_trajectory.append((s_after, float(policy_scores[a_idx]), r, next_v))
 
