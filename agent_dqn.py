@@ -32,13 +32,14 @@ class Config:
     gamma = 0.99
     lr = 1e-3
     epsilon = 0.0
-    lam = 0.9                     # TD(lambda) trace decay
+    lam = 0.7                     # TD(lambda) trace decay
     batch_size = 256
     buffer_size = 100_000
-    start_learning_after = 2_000
-    target_update_every = 2_000
+    start_learning_after = 5_00
+    target_update_every = 1_000
     train_every = 1
-    hidden = 256                # <- same width as your agent.py
+    hidden1 = 256                # <- same width as your agent.py
+    hidden2 = 512
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
 CFG = Config()
@@ -65,13 +66,13 @@ def _flip_move(move):
     return mv
 
 class PolicyNet(nn.Module):
-    def __init__(self, in_dim=CFG.state_dim, hid=CFG.hidden):
+    def __init__(self, in_dim=CFG.state_dim, hid1=CFG.hidden1, hid2=CFG.hidden2):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(in_dim, hid), nn.ReLU(),
-            nn.Linear(hid, hid), nn.ReLU(),
-            nn.Linear(hid, hid), nn.ReLU(),
-            nn.Linear(hid, 1),
+            nn.Linear(in_dim, hid1), nn.ReLU(),
+            nn.Linear(hid1, hid1), nn.ReLU(),
+            nn.Linear(hid1, hid2), nn.ReLU(),
+            nn.Linear(hid2, 1),
         )
     def forward(self, x):
         return self.net(x)
@@ -149,17 +150,23 @@ def episode_start():
     for name, param in _pnet.named_parameters():
         _traces[name].zero_()
 
-def end_episode(outcome, final_board, LowGameNum=True):
+def end_episode(outcome, final_board, perspective):
     """
     TD(lambda) update at end of episode
     """
     if _eval_mode or len(_episode_trajectory) == 0:
         return
+
+    final_reward = 1.0 if outcome == 1 else 0.0
+
+    if len(_episode_trajectory) > 0:
+        last_state, last_value, _, _ = _episode_trajectory[-1]
+        _episode_trajectory[-1] = (last_state, last_value, final_reward, 0.0)
     
     # Backward pass through episode
-    for state_features, predicted_value, reward, next_v in reversed(_episode_trajectory):
+    for state_features, predicted_value, reward, next_v in _episode_trajectory:
         # TD error
-        td_error = reward + CFG.gamma * next_v - predicted_value if LowGameNum else outcome - predicted_value
+        td_error = reward + CFG.gamma * next_v - predicted_value
 
         # Compute gradients
         state_t = torch.tensor(state_features, dtype=torch.float32, device=CFG.device).unsqueeze(0)
@@ -172,10 +179,7 @@ def end_episode(outcome, final_board, LowGameNum=True):
             for name, param in _pnet.named_parameters():
                 if param.grad is not None:
                     _traces[name] = CFG.gamma * CFG.lam * _traces[name] + param.grad
-                    param.grad = td_error * _traces[name]
-        _opt.step()
-    
-    _tpnet.load_state_dict(_pnet.state_dict())
+                    param.add(_traces[name], alpha=-CFG.lr * td_error)
 
 def game_over_update(board, reward):
     pass
@@ -250,9 +254,10 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
         # Boostrap next after-state value via opponent simulation
         if not done:
             next_s_after = _s_next_after_opponent(chosen_board_plus_one)
-            next_v = float(_tpnet(
-                torch.tensor(next_s_after, dtype=torch.float32, device=CFG.device).unsqueeze(0)
-            ))
+            with torch.no_grad():
+              next_v = float(_tpnet(
+                  torch.tensor(next_s_after, dtype=torch.float32, device=CFG.device).unsqueeze(0)
+              ))
         else:
             next_s_after = s_after
             next_v = 0.0
