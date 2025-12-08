@@ -30,9 +30,9 @@ import backgammon  # engine
 class Config:
     state_dim = 24 + 4 + 1      # 24 points + (bar_self, bar_opp, off_self, off_opp) + moves_left
     gamma = 0.99
-    lr = 1e-4
+    lr = 1e-3
     epsilon = 0.0
-    lam = 0.7                     # TD(lambda) trace decay
+    lam = 0.9                     # TD(lambda) trace decay
     batch_size = 256
     buffer_size = 100_000
     start_learning_after = 5_00
@@ -169,13 +169,20 @@ def end_episode(outcome, final_board, perspective):
         # TD error
         td_error = reward + CFG.gamma * next_v - v
 
+        #td_error = torch.clamp(td_error, -1.0,1.0)
+
         # Policy gradient-like update
         v.backward()  # compute grad of predicted value w.r.t params
+
         with torch.no_grad():
             for name, param in _pnet.named_parameters():
                 if param.grad is not None:
-                    _traces[name] = CFG.gamma * CFG.lam * _traces[name] + param.grad
-                    param.add_(_traces[name], alpha=CFG.lr * td_error.item())
+                    grad = param.grad * td_error.item()
+                    _traces[name] = CFG.gamma * CFG.lam * _traces[name] + grad
+                    param.add_(_traces[name], alpha=CFG.lr)
+
+            # Clip gradients
+            torch.nn.utils.clip_grad_norm_(_pnet.parameters(), max_norm=0.5)
 
 
 def game_over_update(board, reward):
@@ -198,7 +205,7 @@ def _s_next_after_opponent(chosen_board_plus_one: np.ndarray) -> np.ndarray:
     feats_t = torch.as_tensor(feats, dtype=torch.float32, device=CFG.device)
     with torch.no_grad():
         vals = _tpnet(feats_t)
-        idx = int(torch.argmax(vals).item())
+        idx = int(torch.argmin(vals).item())
     return feats[idx]
 
 # ------------- Policy -------------
