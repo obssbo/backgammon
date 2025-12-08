@@ -149,7 +149,7 @@ def episode_start():
     for name, param in _pnet.named_parameters():
         _traces[name].zero_()
 
-def end_episode(outcome, final_board, is_self_play=True):
+def end_episode(outcome, final_board, LowGameNum=True):
     """
     TD(lambda) update at end of episode
     """
@@ -159,7 +159,7 @@ def end_episode(outcome, final_board, is_self_play=True):
     # Backward pass through episode
     for state_features, predicted_value, reward, next_v in reversed(_episode_trajectory):
         # TD error
-        td_error = reward + CFG.gamma * next_v - predicted_value if is_self_play else outcome - predicted_value
+        td_error = reward + CFG.gamma * next_v - predicted_value if LowGameNum else outcome - predicted_value
 
         # Compute gradients
         state_t = torch.tensor(state_features, dtype=torch.float32, device=CFG.device).unsqueeze(0)
