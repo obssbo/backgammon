@@ -64,39 +64,12 @@ def _flip_move(move):
         mv[r, 1] = _FLIP_IDX[mv[r, 1]]
     return mv
 
-# ------------- Replay Buffer -------------
-class ReplayBuffer:
-    def __init__(self, capacity):
-        self.buf = deque(maxlen=capacity)
-
-    def push(self, s, r, s_next, done):
-        # Normalize types to avoid np.bool_ surprises downstream
-        self.buf.append((s, float(r), s_next, bool(done)))
-
-    def __len__(self):
-        return len(self.buf)
-
-    def sample(self, batch_size):
-        batch = random.sample(self.buf, batch_size)
-        s, r, s2, d = zip(*batch)
-
-        # Explicit, dense arrays (types are important here)
-        S  = np.stack(s).astype(np.float32, copy=False)
-        S2 = np.stack(s2).astype(np.float32, copy=False)
-        D  = np.asarray(d, dtype=np.bool_)   # <— key line
-
-        return (
-            torch.as_tensor(S,  dtype=torch.float32, device=CFG.device),
-            torch.as_tensor(r,  dtype=torch.float32, device=CFG.device).unsqueeze(1),
-            torch.as_tensor(S2, dtype=torch.float32, device=CFG.device),
-            torch.from_numpy(D).to(device=CFG.device).unsqueeze(1),  # <— avoids the error
-        )
-
 class PolicyNet(nn.Module):
     def __init__(self, in_dim=CFG.state_dim, hid=CFG.hidden):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, hid), nn.ReLU(),
+            nn.Linear(hid, hid), nn.ReLU(),
             nn.Linear(hid, hid), nn.ReLU(),
             nn.Linear(hid, 1),
         )
@@ -108,10 +81,8 @@ _tpnet = PolicyNet().to(CFG.device)
 _tpnet.load_state_dict(_pnet.state_dict())
 _opt = torch.optim.Adam(_pnet.parameters(), lr=CFG.lr)
 
-
-_traces = {+1:{name: torch.zeros_like(param) for name, param in _pnet.named_parameters()}, 
-           -1:{name: torch.zeros_like(param) for name, param in _pnet.named_parameters()}}
-_episode_trajectory = {+1: [], -1: []}
+_traces = {name: torch.zeros_like(param) for name, param in _pnet.named_parameters()}
+_episode_trajectory = []  # flat list
 
 _steps = 0
 _eval_mode = False
@@ -142,6 +113,7 @@ def _lazy_load_if_available():
         except Exception:
             pass
         _loaded_from_disk = True
+        
 
 # ------------- Features -------------
 def _moves_left(dice, i):
@@ -172,39 +144,38 @@ def set_eval_mode(is_eval: bool):
     else:          _pnet.train()
 
 def episode_start():
-    global _episode_trajectory
-    _episode_trajectory = {+1: [], -1: []}
-    # Reset eligibility traces
-    for perspective in [+1,-1]:
-        for traces in _traces[perspective].values():
-            traces.zero_()
+    global _episode_trajectory, _traces
+    _episode_trajectory = []
+    for name, param in _pnet.named_parameters():
+        _traces[name].zero_()
 
-def end_episode(outcome, final_board, perspective, is_self_play=True):
+def end_episode(outcome, final_board, is_self_play=True):
     """
     TD(lambda) update at end of episode
     """
-    if _eval_mode or len(_episode_trajectory[perspective]) == 0:
+    if _eval_mode or len(_episode_trajectory) == 0:
         return
     
     # Backward pass through episode
-    for state_features, predicted_value, reward, next_v in reversed(_episode_trajectory[perspective]):
-        if is_self_play:
-            td_error = reward + CFG.gamma * next_v - predicted_value
-        else:
-            td_error = outcome - predicted_value
-        # Get gradients
+    for state_features, predicted_value, reward, next_v in reversed(_episode_trajectory):
+        # TD error
+        td_error = reward + CFG.gamma * next_v - predicted_value if is_self_play else outcome - predicted_value
+
+        # Compute gradients
         state_t = torch.tensor(state_features, dtype=torch.float32, device=CFG.device).unsqueeze(0)
         _opt.zero_grad()
         v = _pnet(state_t)
-        v.backward(retain_graph=False)
-        
-        # Update traces and parameters
+        v.backward()
+
+        # Update traces & parameters
         with torch.no_grad():
             for name, param in _pnet.named_parameters():
                 if param.grad is not None:
-                    _traces[perspective][name] = CFG.gamma * CFG.lam * _traces[perspective][name] + param.grad.data
-                    param.grad.data = td_error * _traces[perspective][name]
+                    _traces[name] = CFG.gamma * CFG.lam * _traces[name] + param.grad
+                    param.grad = td_error * _traces[name]
         _opt.step()
+    
+    _tpnet.load_state_dict(_pnet.state_dict())
 
 def game_over_update(board, reward):
     pass
@@ -226,7 +197,7 @@ def _s_next_after_opponent(chosen_board_plus_one: np.ndarray) -> np.ndarray:
     feats_t = torch.as_tensor(feats, dtype=torch.float32, device=CFG.device)
     with torch.no_grad():
         vals = _tpnet(feats_t).squeeze(1)
-        idx = int(torch.argmin(vals).item())
+        idx = int(torch.argmax(vals).item())
     return feats[idx]
 
 # ------------- Policy -------------
@@ -271,7 +242,7 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
     r = 1.0 if done else 0.0
 
     if train and (not _eval_mode):
-        
+    
         _steps += 1
         if _steps % CFG.target_update_every == 0:
             _tpnet.load_state_dict(_pnet.state_dict())
@@ -285,8 +256,10 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
         else:
             next_s_after = s_after
             next_v = 0.0
-            
-        _episode_trajectory[player].append((s_after, float(policy_scores[a_idx]), r, next_v))
+                
+        # Append to flat trajectory
+        _episode_trajectory.append((s_after, float(policy_scores[a_idx]), r, next_v))
+
 
     # Return move in ORIGINAL POV
     if player == -1:
