@@ -179,7 +179,7 @@ def episode_start():
         for traces in _traces[perspective].values():
             traces.zero_()
 
-def end_episode(outcome, final_board, perspective):
+def end_episode(outcome, final_board, perspective, is_self_play=True):
     """
     TD(lambda) update at end of episode
     """
@@ -188,8 +188,10 @@ def end_episode(outcome, final_board, perspective):
     
     # Backward pass through episode
     for state_features, predicted_value, reward, next_v in reversed(_episode_trajectory[perspective]):
-        td_error = reward + CFG.gamma * next_v - predicted_value
-        
+        if is_self_play:
+            td_error = reward + CFG.gamma * next_v - predicted_value
+        else:
+            td_error = outcome - predicted_value
         # Get gradients
         state_t = torch.tensor(state_features, dtype=torch.float32, device=CFG.device).unsqueeze(0)
         _opt.zero_grad()
