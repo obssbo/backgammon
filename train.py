@@ -65,7 +65,7 @@ def play_one_game(agent1, agent2, training=False, commentary=False, is_self_play
     winner = -player
     final_board = board
 
-    if hasattr(agent1, "end_episode"): agent1.end_episode(+1 if winner == 1 else -1, final_board, perspective=+1, is_self_play=is_self_play)
+    if hasattr(agent1, "end_episode"): agent1.end_episode(+1 if winner == 1 else -1, final_board, perspective=+1)
     if hasattr(agent2, "end_episode"): agent2.end_episode(+1 if winner == -1 else -1, final_board, perspective=-1)
 
     return winner, final_board
@@ -94,10 +94,7 @@ def train(n_games=200_000, n_epochs=5_000, n_eval=500, eval_vs="pubeval"):
     print(f"Baseline for eval: {baseline.__name__ if hasattr(baseline, '__name__') else baseline}")
 
     for g in range(1, n_games + 1):
-        if (g % 5) == 0:
-            winner, final_board = play_one_game(baseline, agent, training=True, commentary=False)
-        else:
-            winner, final_board = play_one_game(agent, agent, training=True, commentary=False)
+        winner, final_board = play_one_game(agent, agent, training=True, commentary=False)
 
         # legacy compatibility hook
         if hasattr(agent, "game_over_update"):
