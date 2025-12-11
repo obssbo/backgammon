@@ -244,7 +244,7 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
     epsilon = CFG.epsilon
     if train:
         probs = torch.softmax(policy_scores, dim=0)
-        a_idx = int(torch.multinomial(probs, 1).item())
+        a_idx = int(torch.argmax(probs, 1).item())
     else:
         a_idx = int(torch.argmax(policy_scores).item())
 
