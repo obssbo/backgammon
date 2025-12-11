@@ -35,7 +35,7 @@ def _apply_move_sequence(board, move_seq, player):
     mv = np.asarray(move_seq, dtype=np.int32)
     return backgammon.update_board(board, mv, player)
 
-def play_one_game(agent1, agent2, training=False, commentary=False):
+def play_one_game(agent1, agent2, training=False, commentary=False, is_self_play=False):
     board = backgammon.init_board()
     player = np.random.randint(2) * 2 - 1  # +1 or -1
 
@@ -64,9 +64,14 @@ def play_one_game(agent1, agent2, training=False, commentary=False):
 
     winner = -player
     final_board = board
-
-    if hasattr(agent1, "end_episode"): agent1.end_episode(+1 if winner == 1 else -1, final_board, perspective=+1)
-    if hasattr(agent2, "end_episode"): agent2.end_episode(+1 if winner == -1 else -1, final_board, perspective=-1)
+    if is_self_play:
+        if np.random.rand() <= 0.5:
+            if hasattr(agent1, "end_episode"): agent1.end_episode(+1 if winner == 1 else -1, final_board, perspective=+1)
+        else:
+            if hasattr(agent2, "end_episode"): agent2.end_episode(+1 if winner == -1 else -1, final_board, perspective=-1)
+    else:
+        if hasattr(agent1, "end_episode"): agent1.end_episode(+1 if winner == 1 else -1, final_board, perspective=+1)
+        if hasattr(agent2, "end_episode"): agent2.end_episode(+1 if winner == -1 else -1, final_board, perspective=-1)
 
     return winner, final_board
 
@@ -92,11 +97,8 @@ def train(n_games=200_000, n_epochs=5_000, n_eval=500, eval_vs="pubeval"):
 
     print("Training agent with self-play...")
     print(f"Baseline for eval: {baseline.__name__ if hasattr(baseline, '__name__') else baseline}")
-    HighGameNum = False
     for g in range(1, n_games + 1):
-        if g > 3000:
-            HighGameNum = True
-        winner, final_board = play_one_game(agent, agent, training=True, commentary=False)
+        winner, final_board = play_one_game(agent, agent, training=True, commentary=False, is_self_play=True)
 
         # legacy compatibility hook
         if hasattr(agent, "game_over_update"):
