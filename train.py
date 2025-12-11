@@ -64,14 +64,8 @@ def play_one_game(agent1, agent2, training=False, commentary=False, is_self_play
 
     winner = -player
     final_board = board
-    if is_self_play:
-        if np.random.rand() <= 0.5:
-            if hasattr(agent1, "end_episode"): agent1.end_episode(+1 if winner == 1 else -1, final_board, perspective=+1)
-        else:
-            if hasattr(agent2, "end_episode"): agent2.end_episode(+1 if winner == -1 else -1, final_board, perspective=-1)
-    else:
-        if hasattr(agent1, "end_episode"): agent1.end_episode(+1 if winner == 1 else -1, final_board, perspective=+1)
-        if hasattr(agent2, "end_episode"): agent2.end_episode(+1 if winner == -1 else -1, final_board, perspective=-1)
+    if hasattr(agent1, "end_episode"): agent1.end_episode(+1 if winner == 1 else -1, final_board, perspective=+1)
+    if hasattr(agent2, "end_episode"): agent2.end_episode(+1 if winner == -1 else -1, final_board, perspective=-1)
 
     return winner, final_board
 
