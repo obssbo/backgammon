@@ -239,7 +239,7 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
     Sp_t = torch.as_tensor(Sp, dtype=torch.float32, device=CFG.device)
 
     with torch.no_grad():
-        policy_scores = _pnet(Sp_t)
+        policy_scores, _ = _pnet(Sp_t)
     # Epsilon-greedy action selection
     epsilon = CFG.epsilon
     if train:
