@@ -65,20 +65,24 @@ def _flip_move(move):
         mv[r, 1] = _FLIP_IDX[mv[r, 1]]
     return mv
 
-class PolicyNet(nn.Module):
+class PolicyValueNet(nn.Module):
     def __init__(self, in_dim=CFG.state_dim, hid1=CFG.hidden1, hid2=CFG.hidden2):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, hid1), nn.ReLU(),
             nn.Linear(hid1, hid2), nn.ReLU(),
-            nn.Linear(hid2, 1),
         )
-    def forward(self, x):
-        scores = self.net(x).squeeze(-1)
-        return scores
 
-_pnet = PolicyNet().to(CFG.device)
-_tpnet = PolicyNet().to(CFG.device)
+        self.policy_head = nn.Linear(hid2, 1)
+        self.value_head = nn.Linear(hid2,1)
+    def forward(self, x):
+        feat = self.net(x)
+        policy_score = self.policy_head(feat)
+        value = torch.sigmoid(self.value_head(feat))
+        return policy_score, value
+
+_pnet = PolicyValueNet().to(CFG.device)
+_tpnet = PolicyValueNet().to(CFG.device)
 _tpnet.load_state_dict(_pnet.state_dict())
 _opt = torch.optim.Adam(_pnet.parameters(), lr=CFG.lr)
 
@@ -164,25 +168,27 @@ def end_episode(outcome, final_board, perspective):
     for t, (state_features, _, reward, next_v) in enumerate(_episode_trajectory):
         state_t = torch.tensor(state_features, dtype=torch.float32, device=CFG.device).unsqueeze(0)
         _opt.zero_grad()
-        v = _pnet(state_t).squeeze(0)
+        _, v = _pnet(state_t)
+
+        if t == len(_episode_trajectory)-1:
+            td_target = final_reward
+        else:
+            td_target = 0.0 + CFG.gamma * next_v
+        
 
         # TD error
-        td_error = reward + CFG.gamma * next_v - v
-
-        #td_error = torch.clamp(td_error, -1.0,1.0)
-
-        # Policy gradient-like update
-        v.backward()  # compute grad of predicted value w.r.t params
+        td_error = td_target - v
+        loss = td_error ** 2
+        loss.backward()           # Clip gradients
+        torch.nn.utils.clip_grad_norm_(_pnet.parameters(), max_norm=0.5)
 
         with torch.no_grad():
-            for name, param in _pnet.named_parameters():
+            for name, param in _pnet_named_parameters():
                 if param.grad is not None:
-                    grad = param.grad * td_error.item()
-                    _traces[name] = CFG.gamma * CFG.lam * _traces[name] + grad
-                    param.add_(_traces[name], alpha=CFG.lr)
-
-            # Clip gradients
-            torch.nn.utils.clip_grad_norm_(_pnet.parameters(), max_norm=0.5)
+                    # Accumulate traces
+                    _traces[name] = CFG.gamma * CFG.lam * _traces[name] + param.grad
+                    # Update parameters
+                    param.data.add_(_traces[name], alpha=CFG.lr * td_error.item())
 
 
 def game_over_update(board, reward):
