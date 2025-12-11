@@ -88,7 +88,7 @@ _tpnet.load_state_dict(_pnet.state_dict())
 _opt = torch.optim.Adam(_pnet.parameters(), lr=CFG.lr)
 
 _traces = {name: torch.zeros_like(param) for name, param in _pnet.named_parameters()}
-_episode_trajectory = []  # flat list
+_episode_trajectory = {1: [], -1: []}  # list of (s, aidx, nA, r, next_v, chosen_logp)
 
 _steps = 0
 _eval_mode = False
@@ -151,12 +151,14 @@ def set_eval_mode(is_eval=False):
 
 def episode_start():
     global _episode_trajectory, _traces
-    _episode_trajectory = []
+    _episode_trajectory[1].clear() # Clear +1 turns
+    _episode_trajectory[-1].clear() # Clear -1 turns
     for name, param in _pnet.named_parameters():
         _traces[name].zero_()
 
 def end_episode(outcome, final_board, perspective):
 
+    trajectory = _episode_trajectory[perspective]
     if _eval_mode or len(_episode_trajectory) == 0:
         return
 
@@ -168,7 +170,7 @@ def end_episode(outcome, final_board, perspective):
     next_vs = []
     num_actions_list = []
 
-    for (s, aidx, nA, r, next_v, chosen_logp) in _episode_trajectory:
+    for (s, aidx, nA, r, next_v, chosen_logp) in trajectory:
         states.append(s)
         chosen_logps.append(chosen_logp)
         rewards.append(r)
@@ -210,7 +212,7 @@ def end_episode(outcome, final_board, perspective):
 
     _opt.step()
     # clear trajectory
-    _episode_trajectory.clear()
+    trajectory.clear()
 
 def game_over_update(board, reward):
     pass
@@ -311,7 +313,7 @@ def action(board_copy, dice, player, i, train=False, train_config=None):
             #if _steps % 100 == 0:
             #    print(r)
             # Append to flat trajectory
-            _episode_trajectory.append((s_after, a_idx, nA, r, next_v, float(chosen_logp)))
+            _episode_trajectory[player].append((s_after, a_idx, nA, r, next_v, float(chosen_logp)))
 
 
     # Return move in ORIGINAL POV
